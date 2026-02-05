@@ -109,45 +109,117 @@ Once all containers are running, access the application at:
 http://localhost:8080
 ```
 
-## Viewing Container Logs
+## API Endpoints
 
-### View logs for all containers
+### POST /api/orders
 
-To see logs from all containers:
+Create a new order. Supports idempotency - submitting the same payload multiple times returns the existing order.
 
-```bash
-docker compose logs -f
+**Request:**
+
+```json
+{
+  "order_id": "ORD-12345",
+  "customer_email": "customer@example.com",
+  "total_amount": 99.99,
+  "currency": "EUR",
+  "created_at": "2026-02-05T12:00:00Z"
+}
 ```
 
-### View logs for a specific container
+**Request Parameters:**
 
-To see logs from a specific container:
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `order_id` | string | Yes | Unique order identifier (max 255 characters) |
+| `customer_email` | string | Yes | Valid email address |
+| `total_amount` | number | Yes | Order total amount (≥ 0) |
+| `currency` | string | Yes | 3-letter currency code (e.g., EUR, USD) |
+| `created_at` | string | Yes | ISO 8601 formatted date |
 
-```bash
-# PHP container (most interesting - shows DB setup, migrations, etc.)
-docker compose logs -f php
+**Response (201 Created):**
 
-# Database container
-docker compose logs -f db
-
-# Nginx container
-docker compose logs -f nginx
+```json
+{
+  "order_id": "ORD-12345",
+  "customer_email": "customer@example.com",
+  "total_amount": "99.99",
+  "currency": "EUR",
+  "created_at": "2026-02-05T12:00:00+00:00"
+}
 ```
 
-### View logs without following
+**Response (200 OK):** Same as above - returned when the same payload is submitted again (idempotent).
 
-To see logs without following (one-time output):
+**Response (409 Conflict):** Returned when an order with the same `order_id` but different payload already exists.
 
-```bash
-docker compose logs php
+### GET /api/orders/{order_id}
+
+Retrieve an order by its order ID.
+
+**Response (200 OK):**
+
+```json
+{
+  "order_id": "ORD-12345",
+  "customer_email": "customer@example.com",
+  "total_amount": "99.99",
+  "currency": "EUR",
+  "created_at": "2026-02-05T12:00:00+00:00"
+}
 ```
 
-**Tip:** The PHP container logs are particularly useful as they show:
-- Composer dependency installation
-- Laravel application key generation
-- Database connection attempts
-- Migration execution
-- Any errors during startup
+**Response (404 Not Found):**
+
+```json
+{
+  "message": "Order not found"
+}
+```
+
+### GET /api/health
+
+Check the health status of the API, database connection, and schema.
+
+**Response (200 OK):**
+
+```json
+{
+  "status": "ok",
+  "api": "ok",
+  "db": "ok",
+  "schema": "ok"
+}
+```
+
+**Response (503 Service Unavailable):** Returned when database connection fails or schema is not applied.
+
+## Testing
+
+### Running Tests
+
+Run all tests from the project root:
+
+```bash
+docker compose exec php php artisan test
+```
+
+Run only feature tests:
+
+```bash
+docker compose exec php php artisan test --testsuite=Feature
+```
+
+### Test Database Strategy
+
+Tests use **SQLite in-memory** database (configured in `phpunit.xml`). This approach:
+
+- **Isolates test data** - Each test run starts with a fresh database via Laravel's `RefreshDatabase` trait
+- **Runs faster** - In-memory database eliminates disk I/O and network overhead
+- **Requires no setup** - No separate test database container needed
+- **Is standard practice** - Laravel's default testing configuration
+
+The production PostgreSQL database is never touched during testing. All migrations run automatically before each test and roll back afterward, ensuring complete isolation.
 
 ## Container Information
 
@@ -173,36 +245,8 @@ docker compose down -v
 
 ## Troubleshooting
 
-### Check container status
-
-```bash
-docker compose ps
-```
-
-### Access PHP container shell
-
-```bash
-docker compose exec php bash
-```
-
 ### Access database
 
 ```bash
 docker compose exec db psql -U orders -d orders
 ```
-
-### View PHP container logs during startup
-
-The PHP container performs several initialization steps. To see them in real-time:
-
-```bash
-docker compose logs -f php
-```
-
-You should see output like:
-- `vendor/ missing -> running composer install...` or `vendor/ exists -> skipping composer install`
-- `.env missing -> copying from .env.example...` (on first run)
-- `APP_KEY missing -> generating...` (on first run)
-- `Waiting for DB to be ready (pgsql)...`
-- `DB is ready.`
-- `Running migrations...`
