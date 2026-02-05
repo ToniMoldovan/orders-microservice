@@ -6,6 +6,7 @@ use App\Models\Order;
 use Carbon\Carbon;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class OrderIdempotencyService
 {
@@ -20,8 +21,19 @@ class OrderIdempotencyService
         // Normalize the input data
         $normalized = $this->normalize($validated);
 
+        Log::info('Order request received', [
+            'event' => 'order.request_received',
+            'order_id' => $normalized['order_id'],
+        ]);
+
         // Compute hash of normalized payload
         $payloadHash = $this->computeHash($normalized);
+
+        Log::info('Order hash computed', [
+            'event' => 'order.hash_computed',
+            'order_id' => $normalized['order_id'],
+            'payload_hash' => $payloadHash,
+        ]);
 
         // Wrap database operations in a transaction for atomicity
         return DB::transaction(function () use ($normalized, $payloadHash) {
@@ -32,9 +44,20 @@ class OrderIdempotencyService
                 // Compare stored hash with computed hash
                 if ($existingOrder->payload_hash === $payloadHash) {
                     // Same payload - return existing order
+                    Log::info('Order idempotent hit', [
+                        'event' => 'order.idempotent_hit',
+                        'order_id' => $normalized['order_id'],
+                        'payload_hash' => $payloadHash,
+                    ]);
                     return ['status' => 200, 'order' => $existingOrder];
                 } else {
                     // Different payload - conflict
+                    Log::warning('Order conflict detected', [
+                        'event' => 'order.conflict',
+                        'order_id' => $normalized['order_id'],
+                        'computed_hash' => $payloadHash,
+                        'stored_hash' => $existingOrder->payload_hash,
+                    ]);
                     return ['status' => 409, 'order' => $existingOrder];
                 }
             }
@@ -50,6 +73,12 @@ class OrderIdempotencyService
                     'payload_hash' => $payloadHash,
                 ]);
 
+                Log::info('Order created', [
+                    'event' => 'order.created',
+                    'order_id' => $normalized['order_id'],
+                    'payload_hash' => $payloadHash,
+                ]);
+
                 return ['status' => 201, 'order' => $order];
             } catch (QueryException $e) {
                 // Check if it's a unique constraint violation (SQLSTATE 23000)
@@ -60,12 +89,31 @@ class OrderIdempotencyService
 
                     if ($existingOrder->payload_hash === $payloadHash) {
                         // Same payload - return existing order
+                        Log::info('Order idempotent hit (race condition)', [
+                            'event' => 'order.idempotent_hit',
+                            'order_id' => $normalized['order_id'],
+                            'payload_hash' => $payloadHash,
+                        ]);
                         return ['status' => 200, 'order' => $existingOrder];
                     } else {
                         // Different payload - conflict
+                        Log::warning('Order conflict detected (race condition)', [
+                            'event' => 'order.conflict',
+                            'order_id' => $normalized['order_id'],
+                            'computed_hash' => $payloadHash,
+                            'stored_hash' => $existingOrder->payload_hash,
+                        ]);
                         return ['status' => 409, 'order' => $existingOrder];
                     }
                 }
+
+                // Log database error
+                Log::error('Database error while processing order', [
+                    'event' => 'order.db_error',
+                    'order_id' => $normalized['order_id'],
+                    'error_code' => $e->errorInfo[0] ?? null,
+                    'error_message' => $e->getMessage(),
+                ]);
 
                 // Re-throw if it's not a unique constraint violation
                 throw $e;

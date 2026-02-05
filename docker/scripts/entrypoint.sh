@@ -48,6 +48,8 @@ set_env "DB_PASSWORD" "${DB_PASSWORD:-orders}"
 
 set_env "SESSION_DRIVER" "${SESSION_DRIVER:-file}"
 
+set_env "LOG_CHANNEL" "${LOG_CHANNEL:-stderr_json}"
+
 # generate APP_KEY only if missing
 if ! grep -qE '^APP_KEY=.+$' .env; then
   echo "APP_KEY missing -> generating..."
