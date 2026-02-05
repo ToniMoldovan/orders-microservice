@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Order;
 use Carbon\Carbon;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 
 class OrderIdempotencyService
 {
@@ -22,39 +23,13 @@ class OrderIdempotencyService
         // Compute hash of normalized payload
         $payloadHash = $this->computeHash($normalized);
 
-        // Try to find existing order by order_id
-        $existingOrder = Order::where('order_id', $normalized['order_id'])->first();
+        // Wrap database operations in a transaction for atomicity
+        return DB::transaction(function () use ($normalized, $payloadHash) {
+            // Try to find existing order by order_id
+            $existingOrder = Order::where('order_id', $normalized['order_id'])->first();
 
-        if ($existingOrder) {
-            // Compare stored hash with computed hash
-            if ($existingOrder->payload_hash === $payloadHash) {
-                // Same payload - return existing order
-                return ['status' => 200, 'order' => $existingOrder];
-            } else {
-                // Different payload - conflict
-                return ['status' => 409, 'order' => $existingOrder];
-            }
-        }
-
-        // Order doesn't exist - attempt to create
-        try {
-            $order = Order::create([
-                'order_id' => $normalized['order_id'],
-                'customer_email' => $normalized['customer_email'],
-                'total_amount' => $normalized['total_amount'],
-                'currency' => $normalized['currency'],
-                'order_created_at' => Carbon::parse($normalized['created_at'])->utc(),
-                'payload_hash' => $payloadHash,
-            ]);
-
-            return ['status' => 201, 'order' => $order];
-        } catch (QueryException $e) {
-            // Check if it's a unique constraint violation (SQLSTATE 23000)
-            if (isset($e->errorInfo[0]) && $e->errorInfo[0] === '23000') {
-                // Race condition: another request created the order
-                // Re-fetch and compare hashes
-                $existingOrder = Order::where('order_id', $normalized['order_id'])->firstOrFail();
-
+            if ($existingOrder) {
+                // Compare stored hash with computed hash
                 if ($existingOrder->payload_hash === $payloadHash) {
                     // Same payload - return existing order
                     return ['status' => 200, 'order' => $existingOrder];
@@ -64,9 +39,57 @@ class OrderIdempotencyService
                 }
             }
 
-            // Re-throw if it's not a unique constraint violation
-            throw $e;
-        }
+            // Order doesn't exist - attempt to create
+            try {
+                $order = Order::create([
+                    'order_id' => $normalized['order_id'],
+                    'customer_email' => $normalized['customer_email'],
+                    'total_amount' => $normalized['total_amount'],
+                    'currency' => $normalized['currency'],
+                    'order_created_at' => Carbon::parse($normalized['created_at'])->utc(),
+                    'payload_hash' => $payloadHash,
+                ]);
+
+                return ['status' => 201, 'order' => $order];
+            } catch (QueryException $e) {
+                // Check if it's a unique constraint violation (SQLSTATE 23000)
+                if (isset($e->errorInfo[0]) && $e->errorInfo[0] === '23000') {
+                    // Race condition: another request created the order
+                    // Re-fetch and compare hashes
+                    $existingOrder = Order::where('order_id', $normalized['order_id'])->firstOrFail();
+
+                    if ($existingOrder->payload_hash === $payloadHash) {
+                        // Same payload - return existing order
+                        return ['status' => 200, 'order' => $existingOrder];
+                    } else {
+                        // Different payload - conflict
+                        return ['status' => 409, 'order' => $existingOrder];
+                    }
+                }
+
+                // Re-throw if it's not a unique constraint violation
+                throw $e;
+            }
+        });
+    }
+
+    /**
+     * Find an order by order_id.
+     *
+     * @param string $order_id
+     * @return array{status: int, order: Order|null}
+     */
+    public function findOrderByOrderId(string $order_id): array
+    {
+        return DB::transaction(function () use ($order_id) {
+            $order = Order::where('order_id', $order_id)->first();
+
+            if (!$order) {
+                return ['status' => 404, 'order' => null];
+            }
+
+            return ['status' => 200, 'order' => $order];
+        });
     }
 
     /**
