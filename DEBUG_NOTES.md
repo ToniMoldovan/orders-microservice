@@ -24,3 +24,26 @@ fi
 ```
 
 This way, the key gets generated automatically on first startup, but won't regenerate if it already exists (which is important to avoid breaking sessions and encrypted data).
+
+## Issue: Nginx routing for /api prefixed vs non-prefixed requests
+
+**Problem:**
+Endpoints like `/orders` and `/health` were returning 404 errors, even though the routes were defined in `api.php` (which Laravel prefixes with `/api` by default). The nginx config needed to rewrite requests without the `/api` prefix to include it, so Laravel's router could match them.
+
+**Diagnosis:**
+After rebuilding containers, requests to `/orders` and `/health` were hitting nginx but returning 404. The routes exist at `/api/orders` and `/api/health` in Laravel, but the API spec requires them without the prefix. Using `rewrite ... last` wasn't working because it wasn't properly passing the rewritten URI to Laravel's front controller.
+
+**Solution:**
+Updated the nginx location block to use `break` instead of `last` and directly pass the rewritten request to PHP-FPM. The location block now rewrites the URI and immediately routes to `index.php` with the correct `REQUEST_URI` parameter:
+
+```nginx
+location ~ ^/(orders|health)(/.*)?$ {
+    rewrite ^/(.*)$ /api/$1 break;
+    fastcgi_pass php:9000;
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME $document_root/index.php;
+    fastcgi_param REQUEST_URI $uri$is_args$args;
+}
+```
+
+This ensures that requests to `/orders` or `/health` get rewritten to `/api/orders` and `/api/health` respectively, and Laravel receives the correct request URI to match against the routes.
