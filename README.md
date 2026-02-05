@@ -2,6 +2,34 @@
 
 A Laravel-based microservice for managing orders, containerized with Docker Compose.
 
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Cloning the Repository](#cloning-the-repository)
+- [Environment Variables](#environment-variables)
+  - [Root-level Environment Variables](#root-level-environment-variables)
+  - [Laravel Application Environment Variables](#laravel-application-environment-variables)
+- [Getting Started](#getting-started)
+- [API Endpoints](#api-endpoints)
+  - [POST /api/orders](#post-apiorders)
+  - [GET /api/orders/{order_id}](#get-apiordersorder_id)
+  - [GET /api/health](#get-apihealth)
+- [Rate Limiting](#rate-limiting)
+- [Viewing Logs](#viewing-logs)
+  - [Enable JSON Logging](#enable-json-logging)
+  - [View Logs in Real-Time](#view-logs-in-real-time)
+  - [Test the Logging](#test-the-logging)
+  - [Pretty-Print JSON Logs](#pretty-print-json-logs-optional)
+  - [Filter Logs](#filter-logs-by-event-type)
+  - [Switch Back to Regular Logs](#switch-back-to-regular-logs)
+- [Testing](#testing)
+  - [Running Tests](#running-tests)
+  - [Test Database Strategy](#test-database-strategy)
+- [Container Information](#container-information)
+- [Stopping the Services](#stopping-the-services)
+- [Troubleshooting](#troubleshooting)
+- [Production Considerations](#production-considerations)
+
 ## Prerequisites
 
 - Docker and Docker Compose installed on your system
@@ -62,6 +90,7 @@ The Laravel application environment variables are automatically configured by th
 | `DB_USERNAME` | `orders` | Database username |
 | `DB_PASSWORD` | `orders` | Database password |
 | `SESSION_DRIVER` | `file` | Session storage driver |
+| `LOG_CHANNEL` | `stderr_json` | Logging channel. Can be used for ELK/Datadog |
 
 **Note:** The `APP_KEY` is automatically generated on first startup if it doesn't exist.
 
@@ -194,6 +223,53 @@ Check the health status of the API, database connection, and schema.
 
 **Response (503 Service Unavailable):** Returned when database connection fails or schema is not applied.
 
+## Rate Limiting
+
+The API implements rate limiting to prevent abuse and protect endpoints. Rate limits are enforced using Laravel's built-in throttle middleware.
+
+### Rate Limits
+
+| Endpoint | Limit | Window |
+|----------|-------|--------|
+| `POST /api/orders` | 20 requests | 1 minute |
+| `GET /api/orders/{order_id}` | 60 requests | 1 minute |
+| `GET /api/health` | 60 requests | 1 minute |
+
+### Rate Limit Response
+
+When the rate limit is exceeded, the API returns a `429 Too Many Requests` response with the following headers:
+
+- `X-RateLimit-Limit` - Maximum number of requests allowed
+- `X-RateLimit-Remaining` - Number of requests remaining in the current window
+- `Retry-After` - Number of seconds until the rate limit resets
+
+**Example Response (429 Too Many Requests):**
+
+```json
+{
+  "message": "Too Many Attempts."
+}
+```
+
+Rate limiting is tracked by IP address and uses the configured cache driver (database) to store rate limit data.
+
+## Viewing Logs
+
+The application supports structured JSON logging to stderr, making it easy to ship logs to ELK/Datadog in production and view them locally during development.
+
+
+### View Logs in Real-Time
+
+**View all logs (all containers):**
+```bash
+docker compose logs -f
+```
+
+**Tips:**
+- **X-Request-Id header**: Include this header in requests to track logs across a single request flow. If omitted, the middleware generates one automatically.
+- **Logs go to stderr**: This is why `docker compose logs` shows them - Docker captures stderr/stdout.
+- **Production ready**: The same `LOG_CHANNEL=stderr_json` setting works in production for ELK/Datadog.
+
 ## Testing
 
 ### Running Tests
@@ -250,3 +326,13 @@ docker compose down -v
 ```bash
 docker compose exec db psql -U orders -d orders
 ```
+
+## Production Considerations
+
+- **Authentication & Authorization** — Implement API key validation, OAuth 2.0, or JWT tokens to secure endpoints. I consider using Laravel Passport or Sanctum.
+- **Message Queue** — Use RabbitMQ, Amazon SQS, or Redis-based queues to process orders asynchronously.
+- **Redis for Caching** — Redis handles high-throughput scenarios much better than database-backed cache.
+- **HTTPS/TLS** — Load balancer with SSL or configure nginx with proper certificates.
+- **Secrets Management** — Store database credentials and API keys in a secrets manager rather than environment files.
+- **CI/CD Pipeline** — Automate testing, building, and deployment. Run the test suite on every PR and deploy automatically after merge.
+- **Security Hardening** — Add security headers (CORS, CSP), implement request signing for critical operations
